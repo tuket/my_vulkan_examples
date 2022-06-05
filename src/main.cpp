@@ -1,10 +1,10 @@
 #include <stdio.h>
 #include <assert.h>
 #include <vulkan/vulkan.h>
-#include <shaderc/shaderc.h>
 #include <glm/glm.hpp>
 #include <GLFW/glfw3.h>
 
+typedef uint8_t u8;
 typedef int32_t i32;
 typedef int64_t i64;
 typedef uint32_t u32;
@@ -22,24 +22,22 @@ struct Vk {
 };
 static Vk vk;
 static GLFWwindow* window;
-static auto shaderCompiler = shaderc_compiler_initialize();
 
-struct StrL {
+struct Buffer {
 	u32 len;
-	char* str;
+	u8* data;
 };
-static StrL loadTextFileL(const char* fileName)
+static Buffer loadBinaryFile(const char* fileName)
 {
-	FILE* file = fopen(fileName, "r");
+	FILE* file = fopen(fileName, "rb");
 	if (!file)
 		return {};
 	fseek(file, 0, SEEK_SET);
 	const u32 len = ftell(file);
-	char* s = new char[len];
-	fread(s, 1, len, file);
-	s[len] = '\0';
+	u8* data = new u8[len];
+	fread(data, 1, len, file);
 	fclose(file);
-	return {len, s};
+	return { len, data };
 }
 
 static char* loadTextFile(const char* fileName)
@@ -56,7 +54,7 @@ static char* loadTextFile(const char* fileName)
 	return s;
 }
 
-VkShaderModule loadGlslShaderModule(const char* fileName)
+/*VkShaderModule loadGlslShaderModule(const char* fileName)
 {
 	const auto src = loadTextFileL(fileName);
 	if (!src.str) {
@@ -88,6 +86,26 @@ VkShaderModule loadGlslShaderModule(const char* fileName)
 	delete[] src.str;
 
 	return module;
+}*/
+
+VkShaderModule loadSpirvShaderModule(const char* fileName)
+{
+	Buffer fileBuffer = loadBinaryFile(fileName);
+	if (!fileBuffer.data) {
+		printf("Error loading shader: %s\n", fileName);
+		exit(-1);
+	}
+
+	const u32* spv = (u32*)fileBuffer.data;
+	const VkShaderModuleCreateInfo info{ .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+		.codeSize = fileBuffer.len,
+		.pCode = spv
+	};
+	VkShaderModule shaderModule;
+	vkCreateShaderModule(vk.device, &info, nullptr, &shaderModule);
+
+	delete[] fileBuffer.data;
+	return shaderModule;
 }
 
 int main()
@@ -277,7 +295,7 @@ int main()
 	}
 
 	{ // create graphics pipeline
-		VkShaderModule vertShad = loadGlslShaderModule(SHADERS_FOLDER"vert.glsl");
+		VkShaderModule vertShad = loadSpirvShaderModule(SHADERS_FOLDER"simple_vert.spirv");
 
 	}
 }
