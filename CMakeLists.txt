@@ -23,7 +23,9 @@ endforeach()
 add_custom_target(shaders_target DEPENDS ${spirv_files})
 
 add_executable(vulkan_examples
-	src/main.cpp
+	src/main.cpp src/common.hpp
+    src/example_0.cpp
+    src/example_1.cpp
 )
 #target_link_libraries(vulkan_examples Vulkan::Vulkan Vulkan::shaderc_combined glm glfw)
 target_link_libraries(vulkan_examples Vulkan::Vulkan ${SHADERC_LIBRARIES} glm glfw)
