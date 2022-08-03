@@ -36,7 +36,7 @@ struct Vk {
 	u32 graphicsQueueFamily;
 	VkQueue graphicsQueue;
 	VkCommandPool graphicsCmdPool;
-	VkSwapchainKHR swapchain;
+	VkSwapchainKHR swapchain = VK_NULL_HANDLE;
 	VkImageView swapchainImgViews[2];
 	VkRenderPass renderPass;
 	VkPipelineLayout pipelineLayout;
@@ -104,6 +104,7 @@ static VkPipelineShaderStageCreateInfo makeShaderStageCreateInfo(VkShaderStageFl
 static void createSwapchainAndFramebuffers(u32 screenW, u32 screenH)
 {
 	VkResult vkRes;
+	auto oldSwapchain = vk.swapchain;
 	{ // create swapchain
 		VkSwapchainCreateInfoKHR info = { .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
 			.surface = vk.surface,
@@ -120,10 +121,22 @@ static void createSwapchainAndFramebuffers(u32 screenW, u32 screenH)
 			.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
 			.presentMode = VK_PRESENT_MODE_MAILBOX_KHR, // with 2 images, MAILBOX and FIFO are equivalent
 			.clipped = VK_TRUE, // this allows to discard the rendering of hidden pixel regions. E.g a window is partially covered by another
-			//.oldSwapchain =,
+			.oldSwapchain = oldSwapchain,
 		};
 		vkRes = vkCreateSwapchainKHR(vk.device, &info, nullptr, &vk.swapchain);
 		assert(vkRes == VK_SUCCESS);
+	}
+
+	// destroy oldSwapchain stuff
+	if (oldSwapchain != VK_NULL_HANDLE) {
+		for (int i = 0; i < 2; i++) {
+			vkDestroySemaphore(vk.device, vk.semaphore_swapchainImgAvailable[i], nullptr);
+			vkDestroySemaphore(vk.device, vk.semaphore_drawFinished[i], nullptr);
+			// 
+			vkDestroyFramebuffer(vk.device, vk.framebuffers[i], nullptr);
+			vkDestroyImageView(vk.device, vk.swapchainImgViews[i], nullptr);
+		}
+		vkDestroySwapchainKHR(vk.device, oldSwapchain, nullptr);
 	}
 
 	{ // create image views of the swapchain
@@ -747,14 +760,6 @@ void example_1()
 			//printf("R\n");
 			vkDeviceWaitIdle(vk.device);
 
-			for (int i = 0; i < 2; i++) {
-				vkDestroySemaphore(vk.device, vk.semaphore_swapchainImgAvailable[i], nullptr);
-				vkDestroySemaphore(vk.device, vk.semaphore_drawFinished[i], nullptr);
-					// 
-				vkDestroyFramebuffer(vk.device, vk.framebuffers[i], nullptr);
-				vkDestroyImageView(vk.device, vk.swapchainImgViews[i], nullptr);
-			}
-			vkDestroySwapchainKHR(vk.device, vk.swapchain, nullptr);
 			createSwapchainAndFramebuffers(width, height);
 			createSemaphores();
 
