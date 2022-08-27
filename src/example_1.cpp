@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
 #include <GLFW/glfw3.h>
+#include <stb_image.h>
 
 typedef uint8_t u8;
 typedef int32_t i32;
@@ -15,15 +16,17 @@ const auto VK_COLOR_COMPONENT_RGBA_BITS = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_CO
 
 struct Vert {
 	glm::vec2 pos;
+	glm::vec2 tc;
 	glm::vec3 color;
 };
 struct Ubo {
 	glm::vec3 color;
 };
-const Vert triangle[] = {
-	{{-0.8, +0.8}, {1, 0, 0}},
-	{{+0.8, +0.8}, {0, 1, 0}},
-	{{   0, -0.9}, {0, 0, 1}},
+const Vert quad[] = {
+	{{-0.8, -0.8}, {-1, -1}, {0, 0, 0}},
+	{{-0.8, +0.8}, {-1, +1}, {1, 0, 0}},
+	{{+0.8, +0.8}, {+1, +1}, {0, 1, 0}},
+	{{+0.8, -0.8}, {+1, -1}, {0, 0, 1}},
 };
 
 struct Vk {
@@ -53,6 +56,10 @@ struct Vk {
 	VkDescriptorSet descriptorSets[2];
 	VkBuffer ubos[2];
 	VkDeviceMemory ubosMemory;
+	VkImage testImage;
+	VkDeviceMemory testImageMemory;
+	VkImageView testImageView;
+	VkSampler testTextureSampler;
 };
 static Vk vk;
 static GLFWwindow* window;
@@ -230,7 +237,7 @@ static void recordCmdBuffers(u32 screenW, u32 screenH)
 
 		vkCmdBindPipeline(vk.cmdBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, vk.pipeline);
 
-		const VkViewport viewport = { 0.f, 0.f, screenW, screenH, 0.f, 1.f };
+		const VkViewport viewport = { 0.f, 0.f, float(screenW), float(screenH), 0.f, 1.f };
 		vkCmdSetViewport(vk.cmdBuffers[i], 0, 1, &viewport);
 		const VkRect2D scissorRegion = { {0, 0}, {screenW, screenH} };
 		vkCmdSetScissor(vk.cmdBuffers[i], 0, 1, &scissorRegion);
@@ -241,11 +248,11 @@ static void recordCmdBuffers(u32 screenW, u32 screenH)
 			0, 1, vk.descriptorSets,
 			0, nullptr // dynamic offsets
 		);
-		// draw the triangle!
+		// draw the quad!
 		u64 vertBufferOffset = 0;
 		vkCmdBindVertexBuffers(vk.cmdBuffers[i], 0, 1, &vk.vertexBuffer, &vertBufferOffset);
 		vkCmdDraw(vk.cmdBuffers[i],
-			3, // num vertices
+			std::size(quad), // num vertices
 			1, // num instances
 			0, // first vertex
 			0 // first instance
@@ -256,6 +263,37 @@ static void recordCmdBuffers(u32 screenW, u32 screenH)
 		vkRes = vkEndCommandBuffer(vk.cmdBuffers[i]);
 		assert(vkRes == VK_SUCCESS);
 	}
+}
+
+static u32 findMemoryTypeInd(
+	u32 memoryTypeBits,
+	VkMemoryPropertyFlagBits required,
+	VkMemoryPropertyFlagBits forbidden,
+	VkMemoryPropertyFlagBits desired,
+	VkMemoryPropertyFlagBits notDesired
+)
+{
+	u32 res = 0;
+	u32 score = 0;
+	for (u32 memTypeInd = 0; memTypeInd < vk.deviceMemProps.memoryTypeCount; memTypeInd++) {
+		auto& memType = vk.deviceMemProps.memoryTypes[memTypeInd];
+		if ((memoryTypeBits & (1 << memTypeInd)) &&
+			(memType.propertyFlags & required) == required &&
+			(~memType.propertyFlags & forbidden) == forbidden
+		)
+		{
+			u32 newScore = 1; // compute score for desired and not desired property flags
+			newScore += std::popcount(memType.propertyFlags & desired);
+			newScore += std::popcount(~memType.propertyFlags & notDesired);
+
+			if (newScore > score) {
+				res = memTypeInd;
+				score = newScore;
+			}
+		}
+	}
+
+	return res;
 }
 
 void example_1()
@@ -430,6 +468,12 @@ void example_1()
 				{
 					.location = 1,
 					.binding = 0,
+					.format = VK_FORMAT_R32G32_SFLOAT,
+					.offset = offsetof(Vert, tc),
+				},
+				{
+					.location = 2,
+					.binding = 0,
 					.format = VK_FORMAT_R32G32B32_SFLOAT,
 					.offset = offsetof(Vert, color),
 				},
@@ -442,7 +486,7 @@ void example_1()
 			};
 
 			const VkPipelineInputAssemblyStateCreateInfo inputAssemblyInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-				.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+				.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN,
 				.primitiveRestartEnable = VK_FALSE
 			};
 
@@ -494,16 +538,24 @@ void example_1()
 
 
 			{
-				const VkDescriptorSetLayoutBinding binding = {
-					.binding = 0,
-					.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-					.descriptorCount = 1, // world be more than 1 for arrays of buffers
-					.stageFlags = VK_SHADER_STAGE_ALL
+				const VkDescriptorSetLayoutBinding bindings[] = {
+					{
+						.binding = 0,
+						.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+						.descriptorCount = 1, // would be more than 1 for arrays of buffers
+						.stageFlags = VK_SHADER_STAGE_ALL
+					},
+					{
+						.binding = 1,
+						.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+						.descriptorCount = 1,
+						.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+					}
 				};
 				const VkDescriptorSetLayoutCreateInfo info = {
 					.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-					.bindingCount = 1,
-					.pBindings = &binding,
+					.bindingCount = std::size(bindings),
+					.pBindings = bindings,
 				};
 				vkRes = vkCreateDescriptorSetLayout(vk.device, &info, nullptr, &vk.descriptorSetLayout);
 				assert(vkRes == VK_SUCCESS);
@@ -553,11 +605,237 @@ void example_1()
 
 	createSwapchainAndFramebuffers(screenW, screenH);
 
+	{ // -- create command pools
+		const VkCommandPoolCreateInfo info = {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+			//.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+			.queueFamilyIndex = vk.graphicsQueueFamily,
+		};
+		vkRes = vkCreateCommandPool(vk.device, &info, nullptr, &vk.graphicsCmdPool);
+		assert(vkRes == VK_SUCCESS);
+	}
+
+	{ // create a texture to map onto the quad
+		int w, h, nc;
+		u8* imgData = stbi_load("data/test.png", &w, &h, &nc, 4);
+
+		const VkImageCreateInfo info = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+			.imageType = VK_IMAGE_TYPE_2D,
+			.format = VK_FORMAT_R8G8B8A8_SRGB,
+			.extent = {u32(w), u32(h), 1},
+			.mipLevels = 1,
+			.arrayLayers = 1,
+			.samples = VK_SAMPLE_COUNT_1_BIT,
+			.tiling = VK_IMAGE_TILING_OPTIMAL,
+			.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			.sharingMode = VK_SHARING_MODE_EXCLUSIVE, // the image is accesses from a single queue family
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		};
+		vkRes = vkCreateImage(vk.device, &info, nullptr, &vk.testImage);
+		assert(vkRes == VK_SUCCESS);
+
+		VkMemoryRequirements memReqs;
+		vkGetImageMemoryRequirements(vk.device, vk.testImage, &memReqs);
+
+		const u32 memoryTypeToAllocateFrom = findMemoryTypeInd(memReqs.memoryTypeBits,
+			VkMemoryPropertyFlagBits(0),
+			VkMemoryPropertyFlagBits(0),
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			VkMemoryPropertyFlagBits(0)
+		);
+
+		const VkMemoryAllocateInfo imgAllocInfo = {
+			.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+			.allocationSize = memReqs.size,
+			.memoryTypeIndex = memoryTypeToAllocateFrom,
+		};
+		vkRes = vkAllocateMemory(vk.device, &imgAllocInfo, nullptr, &vk.testImageMemory);
+		assert(vkRes == VK_SUCCESS);
+
+		vkRes = vkBindImageMemory(vk.device, vk.testImage, vk.testImageMemory, 0);
+		assert(vkRes == VK_SUCCESS);
+
+		const size_t memorySize = w * h * 4;
+		const VkBufferCreateInfo bufferCreateInfo = {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = memorySize,
+			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		};
+		VkBuffer stagingBuffer;
+		vkRes = vkCreateBuffer(vk.device, &bufferCreateInfo, nullptr, &stagingBuffer);
+		assert(vkRes == VK_SUCCESS);
+
+		VkMemoryRequirements stagingMemReqs;
+		vkGetBufferMemoryRequirements(vk.device, stagingBuffer, &stagingMemReqs);
+
+		const u32 stagingMemType = findMemoryTypeInd(
+			stagingMemReqs.memoryTypeBits,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+			VkMemoryPropertyFlagBits(0),
+			VkMemoryPropertyFlagBits(0),
+			VkMemoryPropertyFlagBits(0)
+		);
+		const VkMemoryAllocateInfo stagingAlloc = {
+			.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+			.allocationSize = stagingMemReqs.size,
+			.memoryTypeIndex = stagingMemType,
+		};
+		VkDeviceMemory stagingBufferMem;
+		vkRes = vkAllocateMemory(vk.device, &stagingAlloc, nullptr, &stagingBufferMem);
+		assert(vkRes == VK_SUCCESS);
+
+		vkRes = vkBindBufferMemory(vk.device, stagingBuffer, stagingBufferMem, 0);
+		assert(vkRes == VK_SUCCESS);
+
+		void* stagingPtr;
+		vkRes = vkMapMemory(vk.device, stagingBufferMem, 0, VK_WHOLE_SIZE, 0, &stagingPtr);
+		assert(vkRes == VK_SUCCESS);
+		memcpy(stagingPtr, imgData, memorySize);
+		vkUnmapMemory(vk.device, stagingBufferMem);
+
+		VkCommandBuffer stagingCmdBuffer;
+		{
+			const VkCommandBufferAllocateInfo info = {
+				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+				.commandPool = vk.graphicsCmdPool,
+				.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+				.commandBufferCount = 1,
+			};
+			vkRes = vkAllocateCommandBuffers(vk.device, &info, &stagingCmdBuffer);
+			assert(vkRes == VK_SUCCESS);
+		}
+
+		const VkCommandBufferBeginInfo stagingCmdBegin = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+		vkRes = vkBeginCommandBuffer(stagingCmdBuffer, &stagingCmdBegin);
+		assert(vkRes == VK_SUCCESS);
+
+		const VkImageSubresourceRange imgSubResRange = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.baseMipLevel = 0,
+			.levelCount = 1,
+			.baseArrayLayer = 0,
+			.layerCount = 1,
+		};
+
+		VkImageMemoryBarrier imgBarrier = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+			.srcAccessMask = 0,
+			.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.image = vk.testImage,
+			.subresourceRange = imgSubResRange,
+		};
+		vkCmdPipelineBarrier(stagingCmdBuffer,
+			VK_PIPELINE_STAGE_HOST_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			0,
+			0, nullptr,
+			0, nullptr,
+			1, &imgBarrier
+		);
+
+		const VkBufferImageCopy bufferImageCopies[] = {{
+			.bufferOffset = 0,
+			.bufferRowLength = u32(w),
+			.bufferImageHeight = u32(h),
+			.imageSubresource = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.mipLevel = 0,
+				.baseArrayLayer = 0,
+				.layerCount = 1,
+			},
+			.imageOffset = {0, 0, 0},
+			.imageExtent = {u32(w), u32(h), 1}
+		}};
+		vkCmdCopyBufferToImage(stagingCmdBuffer, stagingBuffer, vk.testImage,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, bufferImageCopies);
+		
+		imgBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		imgBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		imgBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		imgBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+		vkCmdPipelineBarrier(stagingCmdBuffer,
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			0,
+			0, nullptr,
+			0, nullptr,
+			1, &imgBarrier
+		);
+
+		vkRes = vkEndCommandBuffer(stagingCmdBuffer);
+		assert(vkRes == VK_SUCCESS);
+
+		VkFence fence; // fence that will be signaled when the image has been uploaded
+		const VkFenceCreateInfo fenceInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+		vkRes = vkCreateFence(vk.device, &fenceInfo, nullptr, &fence);
+		assert(vkRes == VK_SUCCESS);
+
+		const VkSubmitInfo submitInfo = {
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+			.commandBufferCount = 1,
+			.pCommandBuffers = &stagingCmdBuffer,
+		};
+		vkRes = vkQueueSubmit(vk.graphicsQueue, 1, &submitInfo, fence);
+		assert(vkRes == VK_SUCCESS);
+
+		vkRes = vkWaitForFences(vk.device, 1, &fence, VK_FALSE, -1);
+		assert(vkRes == VK_SUCCESS);
+
+		vkDestroyFence(vk.device, fence, nullptr);
+		vkFreeCommandBuffers(vk.device, vk.graphicsCmdPool, 1, &stagingCmdBuffer);
+		vkDestroyBuffer(vk.device, stagingBuffer, nullptr);
+		vkFreeMemory(vk.device, stagingBufferMem, nullptr);
+
+		// create view of the texture
+		const VkImageViewCreateInfo imgViewInfo = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.image = vk.testImage,
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.format = VK_FORMAT_R8G8B8A8_SRGB,
+			//.components = VK_COMPONENT_SWIZZLE_IDENTITY,
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.baseMipLevel = 0,
+				.levelCount = 1,
+				.baseArrayLayer = 0,
+				.layerCount = 1,
+			}
+		};
+		vkRes = vkCreateImageView(vk.device, &imgViewInfo, nullptr, &vk.testImageView);
+		assert(vkRes == VK_SUCCESS);
+
+		// create sampler
+		VkSamplerCreateInfo samplerInfo = {
+			.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+			.magFilter = VK_FILTER_LINEAR,
+			.minFilter = VK_FILTER_LINEAR,
+			.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+			.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+			.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+			.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+			.anisotropyEnable = VK_FALSE,
+			.maxAnisotropy = 0,
+			.compareEnable = VK_FALSE, // this comparison op can be used for Percentage-Closer Filtering:
+			//.compareOp = VK_COMPARE_OP_ALWAYS // https://developer.nvidia.com/gpugems/gpugems/part-ii-lighting-and-shadows/chapter-11-shadow-map-antialiasing
+			.minLod = 0,
+			.maxLod = VK_LOD_CLAMP_NONE,
+			//.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
+			.unnormalizedCoordinates = VK_FALSE,
+		};
+		vkRes = vkCreateSampler(vk.device, &samplerInfo, nullptr, &vk.testTextureSampler);
+		assert(vkRes == VK_SUCCESS);
+	}
+
 	{ // -- create vertex buffer
 		const VkBufferCreateInfo info = {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.flags = 0,
-			.size = sizeof(Vert) * 3,
+			.size = sizeof(quad),
 			.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
 			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		};
@@ -568,16 +846,12 @@ void example_1()
 	{ // -- alloc memory for the vertex buffer
 		VkMemoryRequirements memReqs;
 		vkGetBufferMemoryRequirements(vk.device, vk.vertexBuffer, &memReqs);
-		u32 memoryTypeToAllocateFrom = -1;
-		for (u32 memTypeInd = 0; memTypeInd < vk.deviceMemProps.memoryTypeCount; memTypeInd++) {
-			auto& memType = vk.deviceMemProps.memoryTypes[memTypeInd];
-			if ( (memReqs.memoryTypeBits & (1 << memTypeInd) ) &&
-				 (memType.propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
-			{
-				memoryTypeToAllocateFrom = memTypeInd;
-				break;
-			}
-		}
+		const u32 memoryTypeToAllocateFrom = findMemoryTypeInd(memReqs.memoryTypeBits,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+			VkMemoryPropertyFlagBits(0),
+			VkMemoryPropertyFlagBits(0),
+			VkMemoryPropertyFlagBits(0)
+		);
 
 		const auto nonCoherentAtomSize = vk.physicalDeviceProps.limits.nonCoherentAtomSize; // is the size and alignment in bytes that bounds concurrent access to host-mapped device memory.
 		VkMemoryAllocateInfo allocInfo = {
@@ -596,7 +870,7 @@ void example_1()
 		void* data;
 		vkRes = vkMapMemory(vk.device, vk.vertexBufferMemory, 0, VK_WHOLE_SIZE, 0, &data);
 		assert(vkRes == VK_SUCCESS);
-		memcpy(data, triangle, sizeof(triangle));
+		memcpy(data, quad, sizeof(quad));
 
 		const VkMappedMemoryRange range{
 			.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
@@ -621,7 +895,7 @@ void example_1()
 		const VkDescriptorPoolCreateInfo info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
 			.maxSets = 2,
-			.poolSizeCount = sizeof(sizes),
+			.poolSizeCount = std::size(sizes),
 			.pPoolSizes = sizes
 		};
 		vkRes = vkCreateDescriptorPool(vk.device, &info, nullptr, &vk.descriptorPool);
@@ -671,11 +945,11 @@ void example_1()
 		assert(vkRes == VK_SUCCESS);
 		for (size_t i = 0; i < 2; i++) {
 			Ubo* dataB = (Ubo*)((char*)data + i * memPerBuffer);
-			dataB->color = { 0, 0, 1 };
+			dataB->color = { 0.1, 0.1, 0.1 };
 		}
 		const VkMappedMemoryRange range{
 			.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
-			.memory = vk.vertexBufferMemory,
+			.memory = vk.ubosMemory,
 			.offset = 0,
 			.size = VK_WHOLE_SIZE
 			// https://stackoverflow.com/questions/69181252/the-proper-way-to-invalidate-and-flush-vulkan-memory
@@ -683,7 +957,7 @@ void example_1()
 		vkRes = vkFlushMappedMemoryRanges(vk.device, 1, &range); // tell vulkan which parts of the memory we have modified
 		assert(vkRes == VK_SUCCESS);
 
-		vkUnmapMemory(vk.device, vk.vertexBufferMemory); // when we don't need the mapped pointer anymore we call unmap.
+		vkUnmapMemory(vk.device, vk.ubosMemory); // when we don't need the mapped pointer anymore we call unmap.
 			// However, we could just keep the pointer around, and there shoudn't be any performance penalty
 	}
 
@@ -701,32 +975,38 @@ void example_1()
 
 	// fill descriptor sets
 	for (int i = 0; i < 2; i++) {
-		VkDescriptorBufferInfo bufferInfo = {
+		const VkDescriptorBufferInfo bufferInfo = {
 			.buffer = vk.ubos[i],
 			.offset = 0,
 			.range = VK_WHOLE_SIZE
 		};
-
-		VkWriteDescriptorSet writeInfo = {
-			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = vk.descriptorSets[i],
-			.dstBinding = 0,
-			.dstArrayElement = 0, // dstArrayElement and descriptorCount indicate the subrange of the array
-			.descriptorCount = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.pBufferInfo = &bufferInfo,
+		const VkDescriptorImageInfo imgInfo = {
+			.sampler = vk.testTextureSampler,
+			.imageView = vk.testImageView,
+			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		};
-		vkUpdateDescriptorSets(vk.device, 1, &writeInfo, 0, nullptr);
-	}
 
-	{ // -- create command pools
-		const VkCommandPoolCreateInfo info = {
-			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-			//.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-			.queueFamilyIndex = vk.graphicsQueueFamily,
+		VkWriteDescriptorSet writeInfos[] = {
+			{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = vk.descriptorSets[i],
+				.dstBinding = 0,
+				.dstArrayElement = 0, // dstArrayElement and descriptorCount indicate the subrange of the array
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+				.pBufferInfo = &bufferInfo,
+			},
+			{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = vk.descriptorSets[i],
+				.dstBinding = 1,
+				.dstArrayElement = 0, // dstArrayElement and descriptorCount indicate the subrange of the array
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.pImageInfo = &imgInfo,
+			}
 		};
-		vkRes = vkCreateCommandPool(vk.device, &info, nullptr, &vk.graphicsCmdPool);
-		assert(vkRes == VK_SUCCESS);
+		vkUpdateDescriptorSets(vk.device, std::size(writeInfos), writeInfos, 0, nullptr);
 	}
 
 	// -- create cmd buffers
