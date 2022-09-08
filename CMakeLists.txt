@@ -27,6 +27,7 @@ add_executable(vulkan_examples
 	src/main.cpp src/common.hpp
     src/example_0.cpp
     src/example_1.cpp
+    src/example_2.cpp
 )
 #target_link_libraries(vulkan_examples Vulkan::Vulkan Vulkan::shaderc_combined glm glfw)
 target_link_libraries(vulkan_examples Vulkan::Vulkan ${SHADERC_LIBRARIES} glm glfw stb)

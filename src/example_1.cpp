@@ -121,9 +121,7 @@ static void createSwapchainAndFramebuffers(u32 screenW, u32 screenH)
 			.imageExtent = {screenW, screenH},
 			.imageArrayLayers = 1,
 			.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-			.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, // only once queue will reference an image at the same time. We can still reference the image from different queues, but not at the same time. We must use a memory barrier for this!
-			.queueFamilyIndexCount = 1,
-			.pQueueFamilyIndices = &vk.graphicsQueueFamily,
+			.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, // only one queue will reference an image at the same time. We can still reference the image from different queues, but not at the same time. We must use a memory barrier for this!
 			.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
 			.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
 			.presentMode = VK_PRESENT_MODE_MAILBOX_KHR, // with 2 images, MAILBOX and FIFO are equivalent
@@ -580,7 +578,7 @@ void example_1()
 				.pDynamicStates = dynamicStates
 			};
 
-			VkGraphicsPipelineCreateInfo info{ .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+			const VkGraphicsPipelineCreateInfo info{ .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 				.stageCount = std::size(shaderStages),
 				.pStages = shaderStages,
 				.pVertexInputState = &vertexInputInfo,
@@ -693,6 +691,7 @@ void example_1()
 		vkRes = vkMapMemory(vk.device, stagingBufferMem, 0, VK_WHOLE_SIZE, 0, &stagingPtr);
 		assert(vkRes == VK_SUCCESS);
 		memcpy(stagingPtr, imgData, memorySize);
+
 		vkUnmapMemory(vk.device, stagingBufferMem);
 
 		VkCommandBuffer stagingCmdBuffer;
